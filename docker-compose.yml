@@ -1,0 +1,287 @@
+version: "3"
+
+
+# INTERNAL NETWORKS
+
+networks: 
+  nextcloud_network:
+    name: nextcloud_network
+
+services:
+
+# CERTIFICATE RENEWAL
+  certbot:
+    container_name: certbot
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:rw
+      - ${DOCKER_CONFIG_DIR}/certbot/www:/var/www/certbot:rw
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # Main Dashboard
+  # homer:
+  #   image: b4bz/homer
+  #   container_name: homer
+  #   ports: 
+  #     - 1337:8080
+  #   volumes: 
+  #     - ${DOCKER_CONFIG_DATA}/homer:/www/assets
+  #   user: 1000:1000 # default
+  #   environment:
+  #     - INIT_ASSETS=1 # default
+
+# DASHBOARD
+  flame:
+    container_name: flame
+    image: pawelmalak/flame
+    volumes:
+      - ${DOCKER_DATA_DIR}/flame:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock # optional but required for Docker integration
+    ports:
+      - 5005:5005
+    environment:
+      - PASSWORD=${FLAME_PASSWORD}
+    restart: unless-stopped
+
+# PASSWORD MANAGER
+
+  vaultwarden:
+    container_name: vaultwarden
+    image: vaultwarden/server:latest
+    restart: unless-stopped
+    volumes:
+      - ${MAIN_DRIVE_DIR}/vaultwarden:/data/
+    ports:
+      - 7777:80
+
+# MEDIA
+  transmission:
+    container_name: transmission
+    image: lscr.io/linuxserver/transmission:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+      - TRANSMISSION_WEB_HOME=/combustion-release/
+      - USER=${TRANSMISSION_USERNAME}
+      - PASS=${TRANSMISSION_PASSWORD}
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/transmission:/config
+      - ${MAIN_DRIVE_DIR}/downloads:/downloads
+      - ${DOCKER_DATA_DIR}/transmission/watch:/watch
+    ports:
+      - 9091:9091
+
+  # Media server
+  jellyfin:
+    container_name: jellyfin
+    image: lscr.io/linuxserver/jellyfin:latest
+    restart: unless-stopped
+    group_add:
+      - "109" #  cat /etc/group | grep render
+      - "44" #  cat /etc/group | grep video 
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_DOMAIN_NAME}
+      - DOCKER_MODS=linuxserver/mods:jellyfin-amd
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/jellyfin/library:/config
+      - ${MAIN_DRIVE_DIR}/media/series:/data/series
+      - ${MAIN_DRIVE_DIR}/media/movies:/data/movies
+      - /dev/shm/JellyfinTranscode:/transcode
+    devices:
+      - /dev/dri/:/dev/dri/
+    ports:
+      - 8096:8096
+  
+  # Movies
+  radarr:
+    container_name: radarr
+    image: lscr.io/linuxserver/radarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/radarr:/config
+      - ${MAIN_DRIVE_DIR}/media/movies:/movies
+      - ${MAIN_DRIVE_DIR}/downloads:/downloads
+    ports:
+      - 7878:7878
+
+  # Shows
+  sonarr:
+    container_name: sonarr
+    image: lscr.io/linuxserver/sonarr:latest
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/sonarr:/config
+      - ${MAIN_DRIVE_DIR}/media/series:/tv
+      - ${MAIN_DRIVE_DIR}/downloads:/downloads
+    ports:
+      - 8989:8989
+
+  # Indexer
+  jackett:
+    container_name: jackett
+    image: lscr.io/linuxserver/jackett:latest
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/jackett:/config
+      - ${MAIN_DRIVE_DIR}/downloads/torrent-blackhole:/downloads
+    ports:
+      - 9117:9117
+    restart: unless-stopped
+
+  # Subtitles
+  bazarr:
+    container_name: bazarr
+    image: linuxserver/bazarr
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/bazarr:/config
+      - ${MAIN_DRIVE_DIR}/media/movies:/movies
+      - ${MAIN_DRIVE_DIR}/media/series:/tv
+    ports:
+      - 6767:6767
+
+# SELFHOSTED CLOUD
+  nextcloud:
+    image: nextcloud:latest
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      - nextcloud_db 
+    environment:
+      - OVERWRITEPROTOCOL=https
+      - POSTGRES_HOST=nextcloud_db
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=${POSTGRES_NEXTCLOUD_USERNAME}
+      - POSTGRES_PASSWORD=${POSTGRES_NEXTCLOUD_PASSWORD}
+    volumes:
+      - ${DOCKER_DATA_DIR}/nextcloud:/var/www/html
+      - ${MAIN_DRIVE_DIR}/nextcloud/data:/var/www/html/data
+    ports:
+      - 42069:80
+    networks:
+      - nextcloud_network
+  
+  nextcloud_db:
+    image: postgres:latest
+    container_name: nextcloud_db
+    hostname: nextcloud_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=nextcloud
+      - POSTGRES_USER=${POSTGRES_NEXTCLOUD_USERNAME}
+      - POSTGRES_PASSWORD=${POSTGRES_NEXTCLOUD_PASSWORD}
+    volumes:
+      - ${DOCKER_DATA_DIR}/nextcloud_db:/var/lib/postgresql/data
+    networks:
+      - nextcloud_network
+
+# SELFHOSTED PHOTOS
+
+  photoprism: # https://docs.photoprism.app/getting-started/docker-compose/#command-line-interface
+    image: photoprism/photoprism:latest
+    restart: unless-stopped
+    container_name: photoprism
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    environment:
+      PHOTOPRISM_ADMIN_PASSWORD: ${PHOTOPRISM_PASSWORD}          # YOUR INITIAL ADMIN PASSWORD (MINIMUM 8 CHARACTERS, USERNAME "admin")
+      PHOTOPRISM_SITE_URL: "https://photos.nyanspruk.cyou/"  # public server URL incl http:// or https:// and /path, :port is optional
+      PHOTOPRISM_ORIGINALS_LIMIT: 5000               # file size limit for originals in MB (increase for high-res video)
+      PHOTOPRISM_HTTP_COMPRESSION: "gzip"            # improves transfer speed and bandwidth utilization (none or gzip)
+      PHOTOPRISM_LOG_LEVEL: "info"                   # log level: trace, debug, info, warning, error, fatal, or panic
+      PHOTOPRISM_PUBLIC: "false"                     # no authentication required (disables password protection)
+      PHOTOPRISM_READONLY: "true"                    # do not modify originals directory (reduced functionality)
+      PHOTOPRISM_EXPERIMENTAL: "true"                # enables experimental features
+      PHOTOPRISM_DISABLE_CHOWN: "false"              # disables storage permission updates on startup
+      PHOTOPRISM_DISABLE_WEBDAV: "false"             # disables built-in WebDAV server
+      PHOTOPRISM_DISABLE_SETTINGS: "false"           # disables settings UI and API
+      PHOTOPRISM_DISABLE_TENSORFLOW: "false"         # disables all features depending on TensorFlow
+      PHOTOPRISM_DISABLE_FACES: "false"              # disables facial recognition
+      PHOTOPRISM_DISABLE_CLASSIFICATION: "false"     # disables image classification
+      PHOTOPRISM_DISABLE_RAW: "false"                # disables indexing and conversion of RAW files
+      PHOTOPRISM_RAW_PRESETS: "false"                # enables applying user presets when converting RAW files (reduces performance)
+      PHOTOPRISM_JPEG_QUALITY: 90                    # image quality, a higher value reduces compression (25-100)
+      PHOTOPRISM_DETECT_NSFW: "true"                 # flag photos as private that MAY be offensive (requires TensorFlow)
+      PHOTOPRISM_UPLOAD_NSFW: "true"                 # allows uploads that MAY be offensive
+      PHOTOPRISM_DATABASE_DRIVER: "sqlite"           # SQLite is an embedded database that doesn't require a server
+      PHOTOPRISM_SITE_CAPTION: "AI-Powered Photos App"
+      PHOTOPRISM_SITE_DESCRIPTION: ""                # meta site description
+      PHOTOPRISM_SITE_AUTHOR: "nyanSpruk"            # meta site author
+    devices:
+      - "/dev/dri:/dev/dri"
+    working_dir: "/photoprism" # do not change or remove
+    volumes:
+      - ${MAIN_DRIVE_DIR}/nextcloud/data/nyanSpruk/files/Personal/Phone_Photos_Automatic_Upload/:/photoprism/originals               # Original media files (DO NOT REMOVE)
+      - ${DOCKER_DATA_DIR}/photoprism/:/photoprism/storage                  # *Writable* storage folder for cache, database, and sidecar files (DO NOT REMOVE)
+    ports:
+      - 2080:2342
+
+# Dynamic IP
+  ddclient:
+    container_name: ddclient
+    image: lscr.io/linuxserver/ddclient:latest
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=Etc/UTC    # your timezone: $ timedatectl
+    volumes:
+      - ${DOCKER_CONFIG_DIR}/ddclient/:/config   # ddclient configuration file
+      # Logs: https://stackoverflow.com/questions/41144589/how-to-redirect-docker-container-logs-to-a-single-file
+
+
+# GAMES
+  minecraft:
+    container_name: mc_server_zarja
+    image: marctv/minecraft-papermc-server:1.19
+    ports:
+      - 25565:25565
+      - 25575:25575
+    tty: true
+    stdin_open: true
+    volumes:
+      - ${DOCKER_DATA_DIR}/minecraft:/data
+    restart: unless-stopped
+    environment:
+      OVERRIDE_SERVER_PROPERTIES: "true"
+      # Important administration
+      EULA: "true"
+      MAX_MEMORY: "2G"
+      SERVER_PORT: 25565
+      SPAWN_PROTECTION: 0
+      ENABLE_WHITELIST: "TRUE"
+      OPS: "${MINECRAFT_OPS}"
+
+      # WORLD
+      LEVEL: "${MINECRAFT_WORLD_NAME}"
+      PVP: "false"
+
+      # OTHER
+      MOTD: "Pina's Minecraft Server"
+
+      # RCON Stuff
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "${RCON_PASSWORD}"
+      RCON_PORT: ${RCON_PORT}
+
